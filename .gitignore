@@ -1,0 +1,18 @@
+# NES ROM files
+*.nes
+
+# Compiled object files
+*.o
+
+# Binary data files
+*.bin
+
+# macOS metadata
+.DS_Store
+
+# Compiled executable
+nes_port/nes_port
+
+# Python bytecode
+__pycache__/
+*.pyc
