@@ -146,7 +146,7 @@ void game_pause_check(GameState *gs) {
 
     if (gs->game_mode == MODE_BATTLE) {
         can_pause = true;
-    } else if (gs->game_mode == MODE_GAMEPLAY && gs->game_submode == 3) {
+    } else if (gs->game_mode == MODE_GAMEPLAY && gs->game_submode == 5) {
         can_pause = true;
     }
 
@@ -229,6 +229,31 @@ void timers_update(GameState *gs) {
 }
 
 /* ============================================================
+ * HUD Drawing Helper
+ * ============================================================ */
+static void draw_hud(GameState *gs) {
+    /* "MARIO" at row 2, col 3 ($2043) */
+    static const uint8_t mario_text[] = {0x16,0x0A,0x1B,0x12,0x18};
+    for (int i = 0; i < 5; i++)
+        ppu_write_nametable(gs, 0x2043 + i, mario_text[i]);
+    /* Score "000000" at row 3, col 3 ($2063) */
+    for (int i = 0; i < 6; i++)
+        ppu_write_nametable(gs, 0x2063 + i, gs->score[i]);
+    /* Coin icon area: "x00" at row 3, col 11 */
+    ppu_write_nametable(gs, 0x206B, 0x2E); /* "x" */
+    ppu_write_nametable(gs, 0x206D, 0x00); /* "0" */
+    ppu_write_nametable(gs, 0x206E, 0x00); /* "0" */
+    /* "WORLD" at row 2, col 19 ($2053) */
+    static const uint8_t world_text[] = {0x20,0x18,0x1B,0x15,0x0D};
+    for (int i = 0; i < 5; i++)
+        ppu_write_nametable(gs, 0x2053 + i, world_text[i]);
+    /* "1-1" at row 3, col 20 ($207A) */
+    ppu_write_nametable(gs, 0x207A, gs->world_number + 1);
+    ppu_write_nametable(gs, 0x207B, 0x28);  /* dash */
+    ppu_write_nametable(gs, 0x207C, gs->level_number + 1);
+}
+
+/* ============================================================
  * Game Mode Handlers
  * ============================================================ */
 
@@ -260,6 +285,26 @@ void game_mode_init(GameState *gs) {
         /* Process the title screen PPU buffer (logo, menu, copyright) */
         ppu_process_buffer_at(gs, 0x0300);
 
+        /* Fix 10a: Write initial HUD digit values */
+        for (int i = 0; i < 6; i++)
+            ppu_write_nametable(gs, 0x2063 + i, 0x00);  /* P1 score "000000" */
+        ppu_write_nametable(gs, 0x206D, 0x00);           /* Coin count "0" */
+        ppu_write_nametable(gs, 0x206E, 0x00);           /* Coin count "0" */
+        ppu_write_nametable(gs, 0x207A, 0x01);           /* World "1" */
+        ppu_write_nametable(gs, 0x207B, 0x28);           /* Dash "-" */
+        ppu_write_nametable(gs, 0x207C, 0x01);           /* Level "1" */
+        for (int i = 0; i < 6; i++)
+            ppu_write_nametable(gs, 0x22F1 + i, 0x00);  /* TOP score "000000" at cols 17-22 */
+
+        /* Fix 10b: Make copyright text visible — palette 1 color 1 → white */
+        ppu_write_palette(gs, 5, 0x30);
+
+        /* Fix 10c: Menu cursor sprite next to "1 PLAYER GAME" */
+        gs->oam[0].y    = 143;   /* Row 18 = pixel 144, OAM Y = display_y - 1 */
+        gs->oam[0].tile = 0x75;  /* Mushroom sprite tile */
+        gs->oam[0].attr = 0x00;  /* SPR palette 0, no flip, in front of BG */
+        gs->oam[0].x    = 80;    /* Left of "1 PLAYER GAME" */
+
         /* Select BG pattern table (CHR bank) */
         gs->ppu.ctrl |= PPUCTRL_BG_TABLE;
 
@@ -270,6 +315,14 @@ void game_mode_init(GameState *gs) {
     case 1:
         /* Title screen - wait for Start */
         if (gs->joy1 & BTN_START) {
+            /* Initialize game state (matches title_start_game at $82D8) */
+            gs->world_number = 0;     /* World 1 (0-indexed) */
+            gs->level_number = 0;     /* Level 1 (0-indexed) */
+            gs->remaining_lives = 2;  /* 3 lives (display as lives+1) */
+            gs->area_type = 1;        /* Ground/overworld */
+            memset(gs->score, 0, 6);
+            memset(gs->high_score, 0, 6);
+
             gs->game_mode = MODE_GAMEPLAY;
             gs->game_submode = 0;
         }
@@ -289,40 +342,83 @@ void game_mode_init(GameState *gs) {
 void game_mode_gameplay(GameState *gs) {
     switch (gs->game_submode) {
     case 0:
-        /* Gameplay init - set up level */
+        /* PPU clear + OAM clear (submode 0) */
         ppu_clear_oam(gs);
+        ppu_fill_nametables(gs);
+        /* Clear title screen PPU command buffer in RAM so it stops
+           being re-applied by ppu_process_update_buffer each frame */
+        memset(&gs->ram[0x300], 0, 314);
+        gs->scroll_x = 0;
+        gs->scroll_y = 0;
         gs->game_submode = 1;
         break;
 
     case 1:
-        /* Level loading */
+        /* Load gameplay palette + draw HUD */
+        ppu_process_buffer_at(gs, 0x8CA4);
+        draw_hud(gs);
         gs->game_submode = 2;
         break;
 
-    case 2:
-        /* Gameplay transition */
+    case 2: {
+        /* Draw "WORLD  1-1" center text + lives */
+        /* "WORLD" at row 12, col 11 ($218B) */
+        uint16_t base = 0x218B;
+        static const uint8_t world_label[] = {0x20,0x18,0x1B,0x15,0x0D};
+        for (int i = 0; i < 5; i++)
+            ppu_write_nametable(gs, base + i, world_label[i]);
+        /* Space then "1-1" */
+        ppu_write_nametable(gs, base + 6, 0x24); /* space */
+        ppu_write_nametable(gs, base + 7, gs->world_number + 1);
+        ppu_write_nametable(gs, base + 8, 0x28); /* dash */
+        ppu_write_nametable(gs, base + 9, gs->level_number + 1);
+
+        /* Lives display at row 15: Mario sprite + "x" + count */
+        gs->oam[0].y    = 119;  /* Row 15 pixel = 15*8=120, OAM Y = 119 */
+        gs->oam[0].tile = 0x75; /* Small Mario sprite */
+        gs->oam[0].attr = 0x00;
+        gs->oam[0].x    = 100;  /* Col ~12.5 */
+        ppu_write_nametable(gs, 0x21EE, 0x2E);  /* "x" at col 14 */
+        ppu_write_nametable(gs, 0x21F0, gs->remaining_lives + 1); /* Lives count */
+
+        /* Start delay timer: ~2.5 seconds = 150 frames at 60fps */
+        gs->frame_delay = 150;
         gs->game_submode = 3;
         break;
+    }
 
     case 3:
-        /* Active gameplay - main update */
-        entities_update(gs);
+        /* Wait on "WORLD 1-1" screen */
+        if (gs->frame_delay > 0) {
+            gs->frame_delay--;
+        } else {
+            ppu_clear_oam(gs);
+            ppu_fill_nametables(gs);
+            gs->game_submode = 4;
+        }
+        break;
 
-        /* Handle player input for movement */
-        {
-            /* D-pad movement */
-            if (gs->joy1 & BTN_RIGHT) {
-                if (gs->scroll_x < 255) gs->scroll_x++;
-            }
-            if (gs->joy1 & BTN_LEFT) {
-                if (gs->scroll_x > 0) gs->scroll_x--;
-            }
-            if (gs->joy1 & BTN_UP) {
-                if (gs->scroll_y > 0) gs->scroll_y--;
-            }
-            if (gs->joy1 & BTN_DOWN) {
-                if (gs->scroll_y < 239) gs->scroll_y++;
-            }
+    case 4:
+        /* Level loading stub — re-draw HUD on cleared screen */
+        ppu_process_buffer_at(gs, 0x8CA4);
+        draw_hud(gs);
+        gs->game_submode = 5;
+        break;
+
+    case 5:
+        /* Active gameplay — D-pad scroll placeholder */
+        entities_update(gs);
+        if (gs->joy1 & BTN_RIGHT) {
+            if (gs->scroll_x < 255) gs->scroll_x++;
+        }
+        if (gs->joy1 & BTN_LEFT) {
+            if (gs->scroll_x > 0) gs->scroll_x--;
+        }
+        if (gs->joy1 & BTN_UP) {
+            if (gs->scroll_y > 0) gs->scroll_y--;
+        }
+        if (gs->joy1 & BTN_DOWN) {
+            if (gs->scroll_y < 239) gs->scroll_y++;
         }
         break;
 

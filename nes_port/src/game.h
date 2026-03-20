@@ -128,6 +128,12 @@ typedef struct {
     uint8_t score[6];         /* $07DD-$07E2 */
     uint8_t high_score[6];    /* $07D7-$07DC */
 
+    /* World/level tracking */
+    uint8_t world_number;       /* $075F: current world (0-indexed, display as +1) */
+    uint8_t level_number;       /* $075C: current level within world (0-indexed) */
+    uint8_t remaining_lives;    /* $075A: lives remaining */
+    uint8_t area_type;          /* $0744: area palette type (0=water,1=ground,2=underground,3=castle) */
+
     /* Entity data */
     uint8_t entity_state[16]; /* $0730+: entity states */
     uint8_t entity_type[16];  /* $06A1+: entity types */
